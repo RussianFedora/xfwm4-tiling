@@ -1,0 +1,163 @@
+diff -uNdr xfwm4-4.8.3.orig/src/client.c xfwm4-4.8.3/src/client.c
+--- xfwm4-4.8.3.orig/src/client.c	2011-12-19 23:22:19.000000000 +0400
++++ xfwm4-4.8.3/src/client.c	2012-08-09 15:18:59.269434566 +0400
+@@ -107,7 +107,7 @@
+ /* Forward decl */
+ static void
+ clientUpdateIconPix (Client * c);
+-static void
++void
+ clientNewMaxSize (Client * c, XWindowChanges *wc);
+ 
+ Display *
+@@ -3232,7 +3232,7 @@
+     wc->height = c->old_height;
+ }
+ 
+-static void
++void
+ clientNewMaxSize (Client * c, XWindowChanges *wc)
+ {
+     ScreenInfo *screen_info;
+@@ -3259,7 +3259,7 @@
+     full_h = MIN (screen_info->height - screen_info->params->xfwm_margins[STRUTS_BOTTOM],
+                   rect.y + rect.height) - full_y;
+ 
+-    if (FLAG_TEST_ALL (c->flags, CLIENT_FLAG_MAXIMIZED))
++    if (FLAG_TEST_ALL (c->flags, CLIENT_FLAG_MAXIMIZED) || FLAG_TEST (c->flags, CLIENT_FLAG_TILED))
+     {
+         /* Adjust size to the largest size available, not covering struts */
+         clientMaxSpace (screen_info, &full_x, &full_y, &full_w, &full_h);
+diff -uNdr xfwm4-4.8.3.orig/src/client.h xfwm4-4.8.3/src/client.h
+--- xfwm4-4.8.3.orig/src/client.h	2011-12-19 23:22:19.000000000 +0400
++++ xfwm4-4.8.3/src/client.h	2012-08-09 15:09:54.373328161 +0400
+@@ -162,6 +162,8 @@
+ #define CLIENT_FLAG_HAS_SHAPE           (1L<<18)
+ #define CLIENT_FLAG_FULLSCREN_MONITORS  (1L<<19)
+ 
++#define CLIENT_FLAG_TILED               (1L<<20)
++
+ #define WM_FLAG_DELETE                  (1L<<0)
+ #define WM_FLAG_INPUT                   (1L<<1)
+ #define WM_FLAG_TAKEFOCUS               (1L<<2)
+@@ -338,6 +340,9 @@
+ extern Client *clients;
+ extern unsigned int client_count;
+ 
++void                     clientNewMaxSize                       (Client * c,
++                                                                 XWindowChanges *wc);
++
+ Display                 *clientGetXDisplay                      (Client *);
+ void                     clientClearLastOpTime                  (Client *);
+ void                     clientUpdateWinState                   (Client *,
+diff -uNdr xfwm4-4.8.3.orig/src/moveresize.c xfwm4-4.8.3/src/moveresize.c
+--- xfwm4-4.8.3.orig/src/moveresize.c	2011-12-19 23:22:19.000000000 +0400
++++ xfwm4-4.8.3/src/moveresize.c	2012-08-09 15:20:11.920648428 +0400
+@@ -36,6 +36,7 @@
+ #include <gdk/gdkx.h>
+ #include <gtk/gtk.h>
+ 
++#include "moveresize.h"
+ #include "client.h"
+ #include "focus.h"
+ #include "frame.h"
+@@ -875,6 +876,75 @@
+         c->x = passdata->ox + (xevent->xmotion.x_root - passdata->mx);
+         c->y = passdata->oy + (xevent->xmotion.y_root - passdata->my);
+ 
++        if (!FLAG_TEST_ALL(c->flags, CLIENT_FLAG_MAXIMIZED))
++        {
++            if (xevent->xmotion.x_root < TILING_EDGE || xevent->xmotion.x_root > screen_info->width - TILING_EDGE)
++            {
++                XWindowChanges wc;
++                wc.x = c->x;
++                wc.y = c->y;
++                wc.width = c->width;
++                wc.height = c->height;
++
++                /*
++            if (c->old_x == -1)
++                c->old_x = c->x;
++            if (c->old_y == -1)
++                c->old_y = c->y;
++            */
++
++                if (c->old_width == -1)
++                    c->old_width = c->width;
++                if (c->old_height == -1)
++                    c->old_height = c->height;
++
++                FLAG_SET (c->flags, CLIENT_FLAG_TILED);
++                clientNewMaxSize(c, &wc);
++
++                if (xevent->xmotion.x_root < 20)
++                    c->x = 0;
++                else
++                    c->x = wc.width/2 + frameLeft(c);
++
++                c->y = wc.y;
++                c->width = wc.width/2 - frameRight(c);
++                c->height = wc.height;
++            }
++            else
++            {
++                /*
++            if (c->old_x != -1)
++            {
++                c->x = c->old_x;
++                c->old_x = -1;
++            }
++
++            if (c->old_y != -1)
++            {
++                c->y = c->old_y;
++                c->old_y = -1;
++            }
++            */
++
++                if (c->old_width != -1)
++                {
++                    c->width = c->old_width;
++                    c->old_width = -1;
++                }
++
++                if (c->old_height != -1)
++                {
++                    c->height = c->old_height;
++                    c->old_height = -1;
++                }
++
++                FLAG_UNSET (c->flags, CLIENT_FLAG_TILED);
++
++            }
++            passdata->move_resized = 1;
++        }
++
++
+         clientSnapPosition (c, prev_x, prev_y);
+         if (screen_info->params->restore_on_move)
+         {
+@@ -1186,6 +1256,11 @@
+     status = EVENT_FILTER_STOP;
+     resizing = TRUE;
+ 
++    if (xevent->xmotion.x_root > TILING_EDGE || xevent->xmotion.x_root < screen_info->width - TILING_EDGE)
++    {
++        /* c->old_x = c->old_y =*/ c->old_width = c->old_height = -1;
++    }
++
+     frame_x = frameX (c);
+     frame_y = frameY (c);
+     frame_height = frameHeight (c);
+diff -uNdr xfwm4-4.8.3.orig/src/moveresize.h xfwm4-4.8.3/src/moveresize.h
+--- xfwm4-4.8.3.orig/src/moveresize.h	2011-12-06 21:14:44.000000000 +0400
++++ xfwm4-4.8.3/src/moveresize.h	2012-08-09 15:13:14.079164098 +0400
+@@ -31,6 +31,8 @@
+ #include "screen.h"
+ #include "client.h"
+ 
++#define TILING_EDGE 20
++
+ #ifndef INC_MOVERESIZE_H
+ #define INC_MOVERESIZE_H
+ void                     clientSetWidth                         (Client *,
